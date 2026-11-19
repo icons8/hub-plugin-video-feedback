@@ -1,0 +1,132 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>video-feedback harness</title>
+<style>
+/* hub theme tokens (the designer's mock-up): ?theme=dark|light */
+:root, .t-light { color-scheme: light; --background: #fff; --foreground: #18181b; --card: #fff; --muted: #f4f4f5; --muted-foreground: #62626b;
+  --accent: #ececef; --border: #e4e4e7; --input: #e4e4e7; --primary: #4f6cf6; --ring: #4f6cf6; --outline-image: rgb(0 0 0 / .1);
+  --front-soft: color-mix(in oklch, var(--primary) 12%, transparent); }
+.t-dark { color-scheme: dark; --background: #1c1c20; --foreground: #f6f6f8; --card: #26262b; --muted: #2e2e34; --muted-foreground: #a0a0ab;
+  --accent: #34343b; --border: #3a3a42; --input: #3a3a42; --primary: #8ea0ff; --ring: #8ea0ff; --outline-image: rgb(255 255 255 / .12); }
+/* ?theme=clean-light|clean-dark: the tokens of the Clean theme (kalimullin/hub-plugin-clean: clean.json, clean-dark.json and html.th-clean of clean.css) */
+.t-clean-light { color-scheme: light; --background: #fff; --foreground: #27272a; --card: #fff; --muted: #f1f1f3; --muted-2: #e6e6ea; --muted-foreground: #62626b;
+  --accent: #e9e9e9; --border: #e6e6ea; --input: #d4d4d9; --primary: #4f6cf6; --ring: #c9c9d0; --destructive: #ef4e4e; --outline-image: rgb(0 0 0 / .1); }
+.t-clean-dark { color-scheme: dark; --background: #1c1c1f; --foreground: #ececee; --card: #1c1c1f; --muted: #2a2a2e; --muted-2: #34343a; --muted-foreground: #a1a1aa;
+  --accent: #2a2a2e; --border: #2f2f34; --input: #3f3f46; --primary: #7d93ff; --ring: #52525b; --destructive: #f0565a; --outline-image: rgb(255 255 255 / .12); }
+.th-clean { --c-fill: light-dark(rgb(0 0 0 / 0.05), rgb(255 255 255 / 0.06)); --c-hover: light-dark(rgb(0 0 0 / 0.035), rgb(255 255 255 / 0.04));
+  --c-t1: light-dark(rgb(0 0 0 / 0.90), rgb(255 255 255 / 0.90)); --c-alert: light-dark(#ef4e4e, #cf3a3a); --front-soft: var(--muted); }
+:root { --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px; --space-7: 48px;
+  --radius: 8px; --radius-xs: 6px; --radius-sm: 4px; --radius-lg: 12px; --radius-xl: 16px; --ui-scale: 1.0667;
+  --text-xs: calc(12px * var(--ui-scale)); --text-sm: calc(14px * var(--ui-scale)); --text-base: calc(15px * var(--ui-scale));
+  --font-ui: Onest, -apple-system, "Segoe UI", sans-serif; --font-code: "Geist Mono", ui-monospace, monospace;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --dur-fast: 160ms; --dur-hover: 120ms;
+  --shadow-lift: 0 8px 24px rgb(0 0 0 / .18); }
+body { background: var(--background); color: var(--foreground); font-family: var(--font-ui); }
+</style>
+<body>
+<script type="module">
+// Harness page: a fake hub (post -> the test server), the screen is a canvas captureStream, the microphone is an oscillator.
+// hub.lang is undefined (the plugin shows English); a test sets window.__hub.lang to switch the language.
+const Q = new URLSearchParams(location.search);
+const TH = Q.get("theme") || "light";
+// ?plat=mac: a Mac; the default is Windows, so the scenarios about the floating window run on any machine the tests run on
+Object.defineProperty(navigator, "platform", { configurable: true, value: Q.get("plat") === "mac" ? "MacIntel" : "Win32" });
+Object.defineProperty(navigator, "userAgentData", { configurable: true, value: undefined });
+document.documentElement.classList.add(TH === "dark" ? "t-dark" : TH.startsWith("clean") ? "t-" + TH : "t-light");
+if (TH.startsWith("clean")) document.documentElement.classList.add("th-clean", ...(TH === "clean-dark" ? ["th-clean-dark"] : []));
+// ?bg=light|dark|split: a still "screen" (white, black, or white on the left and black on the right) - the ink colour test
+navigator.mediaDevices.getDisplayMedia = async (opts) => {
+  window.__displayOpts = opts;
+  const c = document.createElement("canvas");
+  const [SW, SH] = (Q.get("screen") || "640x360").split("x").map(Number);   // ?screen=2560x1440: a screen as big as a real one
+  c.width = SW; c.height = SH;
+  const g = c.getContext("2d");
+  let n = 0;
+  const bg = Q.get("bg");
+  const draw = () => {
+    if (bg) {
+      g.fillStyle = bg === "dark" ? "#000" : "#fff";
+      g.fillRect(0, 0, SW, SH);
+      if (bg === "split") { g.fillStyle = "#000"; g.fillRect(SW / 2, 0, SW / 2, SH); }
+      return;
+    }
+    g.fillStyle = `hsl(${(n * 9) % 360} 60% 45%)`;
+    g.fillRect(0, 0, SW, SH);
+    g.fillStyle = "#fff";
+    g.font = "48px sans-serif";
+    g.fillText(`frame ${n++}`, 40, 190);
+  };
+  draw();
+  setInterval(draw, 100);
+  const stream = c.captureStream(10);
+  // ?tab: the picked surface is a browser tab, and the browser can crop it to an element (Element Capture) - a spy for the crop
+  if (Q.has("tab")) {
+    const track = stream.getVideoTracks()[0];
+    track.getSettings = () => ({ displaySurface: "browser" });
+    track.restrictTo = async (t) => { if (Q.has("slowcrop")) await new Promise((ok) => setTimeout(ok, 1500)); window.__restricted = t.el.tagName; };
+    globalThis.RestrictionTarget = { fromElement: async (el) => ({ el }) };
+  }
+  // ?surface=monitor|window: a whole screen or a window was picked (the real getSettings tells which one)
+  if (Q.has("surface")) stream.getVideoTracks()[0].getSettings = () => ({ displaySurface: Q.get("surface") });
+  return stream;
+};
+navigator.mediaDevices.getUserMedia = async () => {
+  const ac = new AudioContext();
+  const osc = ac.createOscillator();
+  const out = ac.createMediaStreamDestination();
+  // ?pulse: speech with pauses (1.5 s tone, 1.5 s silence) - a phrase every 3 s
+  const gain = ac.createGain();
+  osc.connect(gain).connect(out);
+  osc.start();
+  if (location.search.includes("pulse")) for (let i = 0; i < 200; i++) gain.gain.setValueAtTime(i % 2 ? 0 : 1, ac.currentTime + i * 1.5);
+  return out.stream;
+};
+const hub = {
+  url: (name) => `/${name}`,
+  addStyle(name) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = `/${name}`; document.head.append(l); },
+  el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; },
+  async post(path, body) {
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "X-Hub": "1" }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      return r.ok ? { data: j } : { error: j.error || `http ${r.status}`, status: r.status };
+    } catch (e) { return { error: String(e), status: 0 }; }
+  },
+  addSlot(place, spec) { window.__slot = spec; window.__place = place; },
+};
+// ?core=release: the page of the shared hub (1.9.4): no composer.tools slot and no composerTools capability, hub.send (API 1.28)
+// sends an owner message, the button's slot is session.composer with ctx { session }. Otherwise this hub's build: composer.tools
+// with ctx { key, send }
+const RELEASE = Q.get("core") === "release";
+hub.capabilities = Object.freeze(RELEASE
+  ? { composerTransport: 1, composerLeading: 1, views: 1, viewToolbar: 1, openSettings: 1, receipt: 1, banner: 1, subgroups: 1, dictate: 1, sidebar: 1, inputRecord: 1, messageAt: 1 }
+  : { composerTransport: 1, receipt: 1, stay: 1, iconThemes: 1, composerTools: 1 });
+if (RELEASE) hub.send = async (body) => {
+  const cid = body.client_id || "c" + Math.random().toString(36).slice(2);
+  const r = await hub.post("/__send", { ...body, client_id: cid });
+  return r.error ? { ok: false, receipt: "unknown", client_id: cid, status: r.status, error: r.error } : { ok: true, receipt: "accepted", client_id: cid, status: 200, data: r.data };
+};
+window.__hub = hub;
+// ?fs: things to put into full screen - a plain block, a video, an image and an iframe
+if (Q.has("fs")) {
+  document.body.insertAdjacentHTML("afterbegin", `<div id="fsbox" style="width:600px;height:400px;background:#cde"></div>
+    <video id="fsvid" src="/tests/e2e/clip.webm" muted loop controls style="width:300px;height:200px"></video>
+    <img id="fsimg" alt="" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='60'%3E%3Crect width='80' height='60' fill='%23c33'/%3E%3C/svg%3E" style="width:160px;height:120px"><iframe id="fsifr" srcdoc="<body>x</body>" style="width:300px;height:200px"></iframe>`);
+}
+const { default: register } = await import("/main.js");
+register(hub);
+const root = document.createElement("div");
+// ?dock (with ?core=release): the root in the dock as the shared page puts it — in .slot-host.composer above the input form,
+// whose bottom row is the core's (spacer, mic) and is redrawn by the core without the plugin's nodes
+if (RELEASE && Q.has("dock")) {
+  document.body.insertAdjacentHTML("beforeend", `<div class="dock-inner"><div class="slot-host composer"></div>
+    <form class="composer"><textarea></textarea><div class="bar"><span class="spacer"></span><button type="button" class="btn round mic">m</button></div></form></div>`);
+  root.className = "slot slot-session-composer";
+  document.querySelector(".slot-host.composer").append(root);
+} else document.body.append(root);
+const ctx = RELEASE ? { session: { name: "chat", state: "idle" } } : { key: "chat", send: (text, metas) => hub.post("/__send", { text, metas }) };
+window.__ctx = ctx;
+window.__root = root;
+window.__slot.render(root, { voice: true }, ctx);
+window.__ready = true;
+</script>
